@@ -46,7 +46,7 @@ services:
       platforms:
         - linux/amd64
       args:
-        VITE_API_URL: http://localhost:8000/api
+        VITE_API_URL: /api
     platform: linux/amd64
     container_name: focusflow-frontend
     restart: unless-stopped

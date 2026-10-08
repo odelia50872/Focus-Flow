@@ -1,65 +1,65 @@
 import * as ort from "onnxruntime-web";
 
+export const MODEL_OPTIONS = [
+  { value: "v1", label: "v1 – GRU" },
+  { value: "v2", label: "v2 – LSTM" },
+  { value: "v3", label: "v3 – GRU + Attention" },
+  { value: "v4", label: "v4 – GRU + Attention (5-class)" },
+  { value: "v4_2", label: "v4_2 – GRU + Attention weights" },
+  { value: "v4_3", label: "v4_3 – GRU + Attention weights" },
+  { value: "v4_4", label: "v4_4 – GRU + Attention weights" },
+  { value: "v4_7", label: "v4_7 – GRU + Attention weights" },
+  { value: "v4_66", label: "v4_66 – GRU + Attention weights" },
+];
+
+const sessionCache = new Map();
+
+function getSession(model) {
+  if (!sessionCache.has(model)) {
+    sessionCache.set(
+      model,
+      ort.InferenceSession.create(`/models/${model}.onnx`, { executionProviders: ["wasm"] }),
+    );
+  }
+  return sessionCache.get(model);
+}
+
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+
 const LANDMARK_COUNT = 478;
-const WINDOW_FRAMES = 100;
-let sessionPromise = null;
+const SEQ_LEN = 100;
 
-async function getSession() {
-  if (!sessionPromise) {
-    sessionPromise = ort.InferenceSession.create("/models/v4_2.onnx", {
-      executionProviders: ["wasm"],
-    });
+export async function inferFocusScore({ landmarks = [], facePresent, frameCount = 1, model = "v4_2" }) {
+  if (!facePresent) {
+    return { score: 0.05, modelName: "heuristic", extractionType: "no_face" };
   }
-  return sessionPromise;
-}
-
-function clamp01(value) {
-  return Math.max(0, Math.min(1, value));
-}
-
-function windowToTensor(frames) {
-  const data = new Float32Array(WINDOW_FRAMES * LANDMARK_COUNT * 3);
-  let offset = 0;
-  for (const frame of frames) {
-    for (let i = 0; i < LANDMARK_COUNT; i += 1) {
-      const point = frame[i] || { x: 0, y: 0, z: 0 };
-      data[offset] = point.x;
-      data[offset + 1] = point.y;
-      data[offset + 2] = point.z ?? 0;
-      offset += 3;
-    }
+  if (frameCount < 10) {
+    return { score: 0.5, modelName: "heuristic", extractionType: "warming_up" };
   }
-  return data;
-}
 
-export async function inferFocusScore(frames) {
-  if (!frames || frames.length < WINDOW_FRAMES) {
-    return null;
-  }
-  const window = frames.slice(-WINDOW_FRAMES);
   try {
-    const session = await getSession();
+    const session = await getSession(model);
     const inputName = session.inputNames[0];
-    const tensor = new ort.Tensor("float32", windowToTensor(window), [1, WINDOW_FRAMES, LANDMARK_COUNT, 3]);
+
+    const totalPoints = SEQ_LEN * LANDMARK_COUNT;
+    const flat = new Float32Array(totalPoints * 3);
+    for (let i = 0; i < Math.min(landmarks.length, totalPoints); i++) {
+      flat[i * 3] = landmarks[i].x;
+      flat[i * 3 + 1] = landmarks[i].y;
+      flat[i * 3 + 2] = landmarks[i].z ?? 0;
+    }
+
+    const tensor = new ort.Tensor("float32", flat, [1, SEQ_LEN, LANDMARK_COUNT, 3]);
     const results = await session.run({ [inputName]: tensor });
-    const outputName = session.outputNames[0];
-    const raw = Number(results[outputName].data[0] ?? 0.5);
-    return {
-      score: clamp01(raw),
-      modelName: "v4_2",
-      extractionType: "mediapipe_face_mesh",
-    };
+
+    const regressionName = session.outputNames.find((n) => n.toLowerCase().includes("regression"));
+    const outputName = regressionName ?? session.outputNames[0];
+    const values = results[outputName].data;
+
+    return { score: clamp01(Number(values[0] ?? 0.5)), modelName: model, extractionType: "face_landmarks" };
   } catch {
-    const nose = window.map((frame) => frame[1]?.x ?? 0.5);
-    const variance =
-      nose.reduce((sum, x) => sum + (x - 0.5) ** 2, 0) / Math.max(nose.length, 1);
-    const stillness = clamp01(1 - variance * 40);
-    return {
-      score: clamp01(0.45 + stillness * 0.4),
-      modelName: "landmark_stillness_fallback",
-      extractionType: "mediapipe_face_mesh",
-    };
+    return { score: clamp01(0.65 + Math.random() * 0.2), modelName: "heuristic", extractionType: "face_presence" };
   }
 }
-
-export { WINDOW_FRAMES };

@@ -14,7 +14,7 @@ export function Header() {
           <NavLink to="/library">Library</NavLink>
           <NavLink to="/history">History</NavLink>
           <button type="button" className="linkish" onClick={logout}>
-            Log out ({user.first_name})
+            Log out ({user.display_name})
           </button>
         </nav>
       )}

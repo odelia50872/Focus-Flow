@@ -1,30 +1,24 @@
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 
 export function Register() {
   const { register, user } = useAuth();
   const navigate = useNavigate();
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
   if (user) return <Navigate to="/library" replace />;
 
-  async function onSubmit(e: FormEvent) {
+  async function onSubmit(e) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await register({
-        first_name: firstName,
-        last_name: lastName,
-        email,
-        password,
-      });
+      await register({ display_name: displayName, email, password });
       navigate("/library");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
@@ -38,16 +32,10 @@ export function Register() {
       <form className="auth-card" onSubmit={onSubmit}>
         <h1>Create account</h1>
         <p className="muted">Passwords must be at least 8 characters.</p>
-        <div className="row">
-          <label>
-            First name
-            <input value={firstName} onChange={(e) => setFirstName(e.target.value)} required />
-          </label>
-          <label>
-            Last name
-            <input value={lastName} onChange={(e) => setLastName(e.target.value)} required />
-          </label>
-        </div>
+        <label>
+          Display name
+          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
+        </label>
         <label>
           Email
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />

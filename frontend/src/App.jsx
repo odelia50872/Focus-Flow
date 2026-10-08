@@ -21,7 +21,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           <Route path="/library" element={<Library />} />
-          <Route path="/session/:youtubeId" element={<Session />} />
+          <Route path="/session/:contentId" element={<Session />} />
           <Route path="/history" element={<History />} />
         </Routes>
       )}

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 
@@ -7,12 +7,12 @@ export function Login() {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
   if (user) return <Navigate to="/library" replace />;
 
-  async function onSubmit(e: FormEvent) {
+  async function onSubmit(e) {
     e.preventDefault();
     setBusy(true);
     setError(null);

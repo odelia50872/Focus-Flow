@@ -1,19 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { sampleFaceFromVideo } from "../utils/faceLandmarks";
-import { WINDOW_FRAMES, inferFocusScore } from "../utils/focusInference";
+import { inferFocusScore } from "../utils/focusInference";
 
-const SAMPLE_HZ = 10;
-
-export function Camera({ enabled, onScore, onFaceStatus }) {
+export function Camera({ enabled, model, onScore, intervalMs = 10000 }) {
   const videoRef = useRef(null);
-  const framesRef = useRef([]);
-  const [error, setError] = useState(null);
+  const [camError, setCamError] = useState(null);
   const [liveScore, setLiveScore] = useState(null);
-  const [faceStatus, setFaceStatus] = useState("waiting");
-  const [bufferCount, setBufferCount] = useState(0);
+  const [facePresent, setFacePresent] = useState(null);
 
   useEffect(() => {
-    if (!enabled) return undefined;
+    if (!enabled) return;
     let stream = null;
     let cancelled = false;
 
@@ -27,77 +23,61 @@ export function Camera({ enabled, onScore, onFaceStatus }) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       } catch {
-        if (!cancelled) setError("Camera permission was denied. You can still watch without a focus score.");
+        if (!cancelled) setCamError("Camera permission denied or unavailable.");
       }
     }
 
     start();
     return () => {
       cancelled = true;
-      stream?.getTracks().forEach((track) => track.stop());
+      stream?.getTracks().forEach((t) => t.stop());
+      if (videoRef.current) videoRef.current.srcObject = null;
     };
   }, [enabled]);
 
   useEffect(() => {
-    if (!enabled) return undefined;
+    if (!enabled) return;
     let cancelled = false;
-    let timer = null;
 
     const tick = async () => {
       const video = videoRef.current;
       if (!video || cancelled) return;
-      const sample = await sampleFaceFromVideo(video, performance.now());
+      const sample = await sampleFaceFromVideo(video);
+      setFacePresent(sample.facePresent);
+      const result = await inferFocusScore({ ...sample, model });
       if (cancelled) return;
-      if (!sample.facePresent) {
-        setFaceStatus("missing");
-        onFaceStatus?.("missing");
-        framesRef.current = [];
-        setBufferCount(0);
-        return;
-      }
-      setFaceStatus("present");
-      onFaceStatus?.("present");
-      framesRef.current.push(sample.landmarks);
-      if (framesRef.current.length > WINDOW_FRAMES) framesRef.current.shift();
-      setBufferCount(framesRef.current.length);
-      if (framesRef.current.length < WINDOW_FRAMES) return;
-      const result = await inferFocusScore(framesRef.current);
-      if (!result || cancelled) return;
       setLiveScore(result.score);
-      onScore(result.score, result);
+      onScore(result.score, { modelName: result.modelName, extractionType: result.extractionType });
     };
 
-    timer = window.setInterval(tick, 1000 / SAMPLE_HZ);
+    const id = window.setInterval(tick, intervalMs);
+    tick();
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearInterval(id);
     };
-  }, [enabled, onScore, onFaceStatus]);
+  }, [enabled, model, intervalMs, onScore]);
 
-  const secondsUntilScore = Math.max(0, Math.ceil((WINDOW_FRAMES - bufferCount) / SAMPLE_HZ));
+  if (!enabled) {
+    return (
+      <div className="camera-panel">
+        <p className="muted">Camera is off. Enable it to measure focus.</p>
+      </div>
+    );
+  }
 
   return (
-    <aside className="camera-panel">
-      <h2>Camera and focus score</h2>
-      <p className="muted">
-        The camera stays in this browser. We extract 478 MediaPipe face points at 10 frames per
-        second, run the ONNX focus model on a 10-second window, and send only the numeric score to
-        the server. Video is never uploaded.
-      </p>
+    <div className="camera-panel">
       <video ref={videoRef} muted playsInline className="camera-video" />
-      {error && <p className="error">{error}</p>}
-      {!error && faceStatus === "missing" && (
-        <p className="warn" role="status">
-          No face detected. Look at the camera. The model is not running until a face is visible.
+      {camError && <p className="error">{camError}</p>}
+      {!camError && facePresent === false && (
+        <p className="warn">⚠ No face detected — please face the camera.</p>
+      )}
+      {!camError && facePresent !== false && (
+        <p className="camera-meta">
+          Live focus: {liveScore === null ? "…" : `${Math.round(liveScore * 100)}%`}
         </p>
       )}
-      {!error && faceStatus === "present" && liveScore === null && (
-        <p className="muted">Collecting face landmarks… first score in about {secondsUntilScore} seconds.</p>
-      )}
-      <p className="camera-meta">
-        Current focus score (0 = not focused, 1 = very focused):{" "}
-        <strong>{liveScore === null ? "waiting" : liveScore.toFixed(2)}</strong>
-      </p>
-    </aside>
+    </div>
   );
 }
