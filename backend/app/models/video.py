@@ -20,3 +20,8 @@ class Video(Base):
 
     uploader = relationship("User", back_populates="videos")
     watch_items = relationship("WatchItem", back_populates="video", cascade="all, delete-orphan")
+    playlist_items = relationship("PlaylistItem", back_populates="video", cascade="all, delete-orphan")
+    group_items = relationship("GroupVideoItem", back_populates="video", cascade="all, delete-orphan")
+    transcripts = relationship("Transcript", back_populates="video", cascade="all, delete-orphan")
+    summaries = relationship("Summary", back_populates="video", cascade="all, delete-orphan")
+    question_groups = relationship("QuestionGroup", back_populates="video", cascade="all, delete-orphan")

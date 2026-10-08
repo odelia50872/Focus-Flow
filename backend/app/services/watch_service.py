@@ -1,31 +1,65 @@
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.content import ContentItem
+from app.models.ops import WatchTicket
 from app.models.user import User
-from app.models.video import Video
 from app.models.watch import LogData, ModelResult, WatchData, WatchItem
-from app.schemas.watch import FocusSampleCreate, WatchHistoryItem, WatchSessionStart
-from app.services import content_service
+from app.schemas.session import ReadingCreate, ReadingPublic, SessionDetail, SessionSummary
+from app.services.ops_service import log_action
+from app.utils.ids import as_id, iso_utc
 
 
-def start_session(db: Session, user: User, payload: WatchSessionStart) -> WatchItem:
-    video = content_service.get_video_by_youtube_id(db, payload.youtube_id)
-    if video is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+def _parse_content_id(content_id: str) -> int:
+    try:
+        return int(content_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found") from None
 
-    active = db.scalar(
-        select(WatchItem).where(
-            WatchItem.user_id == user.user_id,
-            WatchItem.youtube_id == payload.youtube_id,
-            WatchItem.status == "active",
+
+def _reading_count(db: Session, watch_item_id: int) -> int:
+    return int(
+        db.scalar(
+            select(func.count(ModelResult.model_result_id))
+            .join(LogData)
+            .join(WatchData)
+            .where(WatchData.watch_item_id == watch_item_id)
         )
+        or 0
     )
-    if active:
-        return active
 
-    item = WatchItem(user_id=user.user_id, youtube_id=payload.youtube_id, status="active")
+
+def to_summary(db: Session, item: WatchItem) -> SessionSummary:
+    content = db.get(ContentItem, item.content_id)
+    return SessionSummary(
+        id=as_id(item.watch_item_id),
+        content_id=as_id(item.content_id),
+        content_title=content.title if content else None,
+        started_at=iso_utc(item.started_at) or "",
+        ended_at=iso_utc(item.ended_at),
+        reading_count=_reading_count(db, item.watch_item_id),
+        average_score=item.average_focus,
+    )
+
+
+def start_session(db: Session, user: User, content_id: str) -> WatchItem:
+    item_id = _parse_content_id(content_id)
+    content = db.get(ContentItem, item_id)
+    if content is None or content.user_id != user.user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    item = WatchItem(
+        user_id=user.user_id,
+        content_id=content.content_id,
+        youtube_id=content.youtube_id,
+        status="active",
+        started_at=datetime.now(timezone.utc),
+    )
     db.add(item)
+    log_action(db, user.user_id, f"session.start:{content.content_id}")
     db.commit()
     db.refresh(item)
     return item
@@ -34,43 +68,45 @@ def start_session(db: Session, user: User, payload: WatchSessionStart) -> WatchI
 def get_owned_watch_item(db: Session, user: User, watch_item_id: int) -> WatchItem:
     item = db.get(WatchItem, watch_item_id)
     if item is None or item.user_id != user.user_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Watch session not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return item
 
 
-def record_focus_sample(
-    db: Session, user: User, watch_item_id: int, payload: FocusSampleCreate
-) -> tuple[WatchItem, float]:
+def record_reading(db: Session, user: User, watch_item_id: int, payload: ReadingCreate) -> ReadingPublic:
     item = get_owned_watch_item(db, user, watch_item_id)
     if item.status != "active":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Session already ended")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session already ended")
+
+    ticket = item.next_ticket
+    sub_ticket = item.next_sub_ticket
+    item.next_ticket += 1
+    created_at = datetime.now(timezone.utc)
 
     watch_data = WatchData(
         watch_item_id=item.watch_item_id,
-        vid_watch_time=payload.vid_watch_time,
+        vid_watch_time=payload.position,
         interval=1.0,
+        ticket=ticket,
+        sub_ticket=sub_ticket,
+        log_date=created_at,
     )
     db.add(watch_data)
+    if item.youtube_id:
+        db.add(WatchTicket(youtube_id=item.youtube_id, ticket=ticket, sub_ticket=sub_ticket))
     db.flush()
 
     log_data = LogData(
         watch_data_id=watch_data.watch_data_id,
-        fps_num=payload.fps_num,
+        fps_num=10,
         extraction_type=payload.extraction_type,
     )
     db.add(log_data)
     db.flush()
 
-    db.add(
-        ModelResult(
-            log_data_id=log_data.log_data_id,
-            model=payload.model_name,
-            result=payload.focus_score,
-        )
-    )
+    db.add(ModelResult(log_data_id=log_data.log_data_id, model=payload.model_name, result=payload.score))
     db.flush()
 
-    item.current_time = payload.vid_watch_time
+    item.current_time = payload.position
     scores = list(
         db.scalars(
             select(ModelResult.result)
@@ -79,39 +115,41 @@ def record_focus_sample(
             .where(WatchData.watch_item_id == item.watch_item_id)
         ).all()
     )
-    item.average_focus = sum(scores) / len(scores) if scores else payload.focus_score
-
+    item.average_focus = sum(scores) / len(scores) if scores else payload.score
     db.commit()
-    db.refresh(item)
-    return item, payload.focus_score
+    return ReadingPublic(position=payload.position, score=payload.score, created_at=iso_utc(created_at) or "")
 
 
 def end_session(db: Session, user: User, watch_item_id: int) -> WatchItem:
     item = get_owned_watch_item(db, user, watch_item_id)
-    item.status = "ended"
-    db.commit()
-    db.refresh(item)
+    if item.status != "ended":
+        item.status = "ended"
+        item.ended_at = datetime.now(timezone.utc)
+        log_action(db, user.user_id, f"session.end:{item.watch_item_id}")
+        db.commit()
+        db.refresh(item)
     return item
 
 
-def list_history(db: Session, user: User) -> list[WatchHistoryItem]:
+def list_sessions(db: Session, user: User) -> list[SessionSummary]:
     items = list(
-        db.scalars(
-            select(WatchItem).where(WatchItem.user_id == user.user_id).order_by(WatchItem.last_updated.desc())
-        ).all()
+        db.scalars(select(WatchItem).where(WatchItem.user_id == user.user_id).order_by(WatchItem.started_at.desc())).all()
     )
-    history: list[WatchHistoryItem] = []
-    for item in items:
-        video = db.scalar(select(Video).where(Video.youtube_id == item.youtube_id))
-        history.append(
-            WatchHistoryItem(
-                watch_item_id=item.watch_item_id,
-                youtube_id=item.youtube_id,
-                video_name=video.name if video else None,
-                status=item.status,
-                current_time=item.current_time,
-                average_focus=item.average_focus,
-                last_updated=item.last_updated,
-            )
-        )
-    return history
+    return [to_summary(db, item) for item in items]
+
+
+def get_session_detail(db: Session, user: User, watch_item_id: int) -> SessionDetail:
+    item = get_owned_watch_item(db, user, watch_item_id)
+    rows = db.execute(
+        select(WatchData.vid_watch_time, ModelResult.result, WatchData.log_date)
+        .join(LogData, LogData.watch_data_id == WatchData.watch_data_id)
+        .join(ModelResult, ModelResult.log_data_id == LogData.log_data_id)
+        .where(WatchData.watch_item_id == item.watch_item_id)
+        .order_by(WatchData.log_date.asc())
+    ).all()
+    readings = [
+        ReadingPublic(position=row[0], score=row[1], created_at=iso_utc(row[2]) or "")
+        for row in rows
+    ]
+    summary = to_summary(db, item)
+    return SessionDetail(**summary.model_dump(), readings=readings)

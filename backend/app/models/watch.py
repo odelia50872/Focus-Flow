@@ -11,14 +11,20 @@ class WatchItem(Base):
 
     watch_item_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
-    youtube_id: Mapped[str] = mapped_column(ForeignKey("videos.youtube_id", ondelete="CASCADE"), nullable=False)
+    content_id: Mapped[int] = mapped_column(ForeignKey("content_items.content_id", ondelete="CASCADE"), nullable=False)
+    youtube_id: Mapped[str | None] = mapped_column(ForeignKey("videos.youtube_id", ondelete="SET NULL"), nullable=True)
     current_time: Mapped[float] = mapped_column(Float, default=0.0)
     save_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")  # active | ended
     average_focus: Mapped[float | None] = mapped_column(Float, nullable=True)
+    next_ticket: Mapped[int] = mapped_column(Integer, default=1)
+    next_sub_ticket: Mapped[int] = mapped_column(Integer, default=1)
 
     user = relationship("User", back_populates="watch_items")
+    content = relationship("ContentItem", back_populates="watch_items")
     video = relationship("Video", back_populates="watch_items")
     watch_data = relationship("WatchData", back_populates="watch_item", cascade="all, delete-orphan")
 

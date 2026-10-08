@@ -3,6 +3,7 @@ name: focusflow
 services:
   db:
     image: postgres:16-alpine
+    platform: linux/amd64
     container_name: focusflow-db
     restart: unless-stopped
     environment:
@@ -23,6 +24,9 @@ services:
   backend:
     build:
       context: ./backend
+      platforms:
+        - linux/amd64
+    platform: linux/amd64
     container_name: focusflow-backend
     restart: unless-stopped
     depends_on:
@@ -39,8 +43,11 @@ services:
   frontend:
     build:
       context: ./frontend
+      platforms:
+        - linux/amd64
       args:
         VITE_API_URL: http://localhost:8000/api
+    platform: linux/amd64
     container_name: focusflow-frontend
     restart: unless-stopped
     depends_on:
